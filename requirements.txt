@@ -1,0 +1,5 @@
+fastapi
+uvicorn
+playwright
+dateparser
+jsonpath-ng
