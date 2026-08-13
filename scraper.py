@@ -7,6 +7,7 @@ from playwright.async_api import async_playwright
 import dateparser
 from jsonpath_ng import parse
 
+
 class Scraper:
     async def extract_data(self, url: str, fields: Dict[str, Any], method: str = "GET", cookie: bool = False) -> Dict[str, Any]:
         """
@@ -18,7 +19,7 @@ class Scraper:
             browser = await p.chromium.launch(headless=True)
             context = await browser.new_context()
             page = await context.new_page()
-            
+
             try:
                 if cookie:
                     parsed_url = urllib.parse.urlparse(url)
@@ -29,7 +30,7 @@ class Scraper:
                     cookies = await context.cookies()
                     cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
                     headers = {"Cookie": cookie_str} if cookie_str else {}
-                    
+
                     xsrf_token = next((c['value'] for c in cookies if c['name'] == 'XSRF-TOKEN'), None)
                     if xsrf_token:
                         headers["X-XSRF-TOKEN"] = urllib.parse.unquote(xsrf_token)
@@ -40,8 +41,8 @@ class Scraper:
                     content = await response.text()
                     await page.set_content(content)
                 else:
-                    await page.goto(url, wait_until="load")
-                
+                    await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+
                 try:
                     # Try to parse the inner text as JSON
                     json_text = await page.evaluate("() => document.body.innerText")
@@ -69,7 +70,7 @@ class Scraper:
                 elif isinstance(definition, dict):
                     selector = definition.get("selector")
                     nested_fields = definition.get("fields")
-                    
+
                     if selector and nested_fields:
                         # Collection
                         collection_results = []
@@ -84,12 +85,12 @@ class Scraper:
                             for locator in locators:
                                 item_data = await self._process_fields(locator, nested_fields, is_json=False)
                                 collection_results.append(item_data)
-                        
+
                         results[field_name] = collection_results
                     elif "path" in definition:
                         # Single value with potential transform
                         path_def = definition.get("path")
-                        
+
                         if isinstance(path_def, list):
                             parts = []
                             for p in path_def:
@@ -102,7 +103,7 @@ class Scraper:
                             value = " ".join(parts) if parts else None
                         else:
                             value = self._extract_jpath(root, path_def) if is_json else await self._extract_xpath(root, path_def)
-                        
+
                         # Apply transformation if specified
                         transform = definition.get("transform")
                         if transform and value:
@@ -144,10 +145,10 @@ class Scraper:
 
         element = root.locator(f"xpath={xpath}")
         count = await element.count()
-        
+
         if count == 0:
             return None
-        
+
         if attr_name:
             if count == 1:
                 val = await element.get_attribute(attr_name)
@@ -175,7 +176,7 @@ class Scraper:
             return current_value
 
         t_type = transform if isinstance(transform, str) else transform.get("type")
-        
+
         if t_type == "date":
             return self._parse_date(value)
         elif t_type == "regex":
@@ -190,7 +191,7 @@ class Scraper:
                 return value
             mapping = transform.get("mapping", {})
             return self._apply_map(value, mapping)
-        
+
         return value
 
     def _apply_map(self, value: Any, mapping: Dict[str, Any]) -> Any:

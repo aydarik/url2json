@@ -1,6 +1,7 @@
 import requests
 import json
 
+
 def test_jsonpath():
     url = "http://localhost:8000/extract"
     payload = {
@@ -50,7 +51,7 @@ def test_jsonpath():
             }
         }
     }
-    
+
     print("Testing JSONPath extraction...")
     try:
         response = requests.post(url, json=payload)
@@ -58,6 +59,7 @@ def test_jsonpath():
         print(json.dumps(response.json(), indent=2))
     except Exception as e:
         print(f"Error: {e}")
+
 
 def test_xpath():
     url = "http://localhost:8000/extract"
@@ -124,13 +126,14 @@ def test_xpath():
             }
         }
     }
-    
+
     try:
         response = requests.post(url, json=payload)
         response.raise_for_status()
         print(json.dumps(response.json(), indent=2))
     except Exception as e:
         print(f"Error: {e}")
+
 
 if __name__ == "__main__":
     test_xpath()
