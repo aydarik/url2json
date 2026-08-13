@@ -41,7 +41,10 @@ class Scraper:
                     content = await response.text()
                     await page.set_content(content)
                 else:
-                    await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                    response = await page.goto(url, wait_until="commit")
+                    print("STATUS:", response.status if response else None)
+                    print("TITLE:", await page.title())
+                    print("HTML:", len(await page.content()))
 
                 try:
                     # Try to parse the inner text as JSON
