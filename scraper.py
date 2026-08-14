@@ -1,62 +1,64 @@
 import hashlib
 import json
+import logging
 import re
 import urllib.parse
 from typing import Dict, Any
 
 import dateparser
 from jsonpath_ng import parse
-from playwright.async_api import async_playwright
+from playwright.async_api import BrowserContext
+
+logger = logging.getLogger(__name__)
 
 
 class Scraper:
-    async def extract_data(self, url: str, fields: Dict[str, Any], method: str = "GET", cookie: bool = False) -> Dict[str, Any]:
+    async def extract_data(self, context: BrowserContext, url: str, fields: Dict[str, Any],
+                           method: str = "GET", cookie: bool = False) -> Dict[str, Any]:
         """
         Navigates to the given URL and extracts data based on XPath or JSONPath mappings.
         If cookie is True, it navigates to the base part of the URL first to collect cookies.
         """
-        print(f"URL: {url}")
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context()
-            page = await context.new_page()
+        logger.info("URL: %s ", url)
+        page = await context.new_page()
+
+        try:
+            if cookie:
+                parsed_url = urllib.parse.urlparse(url)
+                cookie_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
+                logger.info("Getting cookies")
+                await page.goto(cookie_url, wait_until="commit")
+
+                cookies = await context.cookies()
+                cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
+                headers = {"Cookie": cookie_str} if cookie_str else {}
+
+                xsrf_token = next((c['value'] for c in cookies if c['name'] == 'XSRF-TOKEN'), None)
+                if xsrf_token:
+                    headers["X-XSRF-TOKEN"] = urllib.parse.unquote(xsrf_token)
+                    logger.info("Injecting X-XSRF-TOKEN")
+
+            if method.upper() == "POST":
+                response = await page.request.fetch(url, method="POST", headers=headers)
+                content = await response.text()
+                await page.set_content(content)
+            else:
+                response = await page.goto(url, wait_until="commit")
+                logger.info("STATUS: %d", response.status if response else None)
+                logger.info("TITLE: %s", await page.title())
+                logger.info("HTML: %d", len(await page.content()))
 
             try:
-                if cookie:
-                    parsed_url = urllib.parse.urlparse(url)
-                    cookie_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
-                    print("Getting cookies")
-                    await page.goto(cookie_url, wait_until="commit")
-
-                    cookies = await context.cookies()
-                    cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
-                    headers = {"Cookie": cookie_str} if cookie_str else {}
-
-                    xsrf_token = next((c['value'] for c in cookies if c['name'] == 'XSRF-TOKEN'), None)
-                    if xsrf_token:
-                        headers["X-XSRF-TOKEN"] = urllib.parse.unquote(xsrf_token)
-                        print("Injecting X-XSRF-TOKEN")
-
-                if method.upper() == "POST":
-                    response = await page.request.fetch(url, method="POST", headers=headers)
-                    content = await response.text()
-                    await page.set_content(content)
-                else:
-                    response = await page.goto(url, wait_until="commit")
-                    print("STATUS:", response.status if response else None)
-                    print("TITLE:", await page.title())
-                    print("HTML:", len(await page.content()))
-
-                try:
-                    # Try to parse the inner text as JSON
-                    json_text = await page.evaluate("() => document.body.innerText")
-                    data = json.loads(json_text)
-                    return await self._process_fields(data, fields, is_json=True)
-                except Exception:
-                    # Fallback to HTML/XPath
-                    return await self._process_fields(page, fields, is_json=False)
-            finally:
-                await browser.close()
+                # Try to parse the inner text as JSON
+                json_text = await page.evaluate("() => document.body.innerText")
+                data = json.loads(json_text)
+                return await self._process_fields(data, fields, is_json=True)
+            except Exception:
+                # Fallback to HTML/XPath
+                return await self._process_fields(page, fields, is_json=False)
+        finally:
+            # Always close the page and context to free resources
+            await context.close()
 
     async def _process_fields(self, root: Any, fields: Dict[str, Any], is_json: bool = False) -> Dict[str, Any]:
         """
@@ -106,7 +108,8 @@ class Scraper:
                                         parts.append(str(val))
                             value = " ".join(parts) if parts else None
                         else:
-                            value = self._extract_jpath(root, path_def) if is_json else await self._extract_xpath(root, path_def)
+                            value = self._extract_jpath(root, path_def) if is_json \
+                                else await self._extract_xpath(root, path_def)
 
                         # Apply transformation if specified
                         transform = definition.get("transform")
