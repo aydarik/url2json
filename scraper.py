@@ -43,10 +43,8 @@ class Scraper:
                 content = await response.text()
                 await page.set_content(content)
             else:
-                response = await page.goto(url, wait_until="commit")
-                logger.info("STATUS: %d", response.status if response else None)
-                logger.info("TITLE: %s", await page.title())
-                logger.info("HTML: %d", len(await page.content()))
+                response = await page.goto(url, wait_until="load")
+            logger.info("STATUS: %d", response.status if response else None)
 
             try:
                 # Try to parse the inner text as JSON
@@ -145,6 +143,10 @@ class Scraper:
         Extracts a single value or list of values from the given root using XPath.
         Applies cleaning (newline replacement and trimming) by default.
         """
+
+        if xpath.startswith("'"):
+            return xpath[1:]
+
         # Handle attribute extraction if specified (e.g., //a/@href)
         attr_name = None
         if "/@" in xpath:

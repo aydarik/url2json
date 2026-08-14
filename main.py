@@ -68,7 +68,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="URL to JSON API",
               description="An API to get the JSON version of HTML content using Playwright.",
-              version="0.2.0",
+              version="0.2.1",
               lifespan=lifespan)
 scraper = Scraper()
 
