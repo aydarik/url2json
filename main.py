@@ -1,8 +1,10 @@
+from typing import Dict, Any, Optional
+
+import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import Dict, Any, Optional
+
 from scraper import Scraper
-import uvicorn
 
 app = FastAPI(title="url2json API")
 scraper = Scraper()

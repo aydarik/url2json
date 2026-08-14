@@ -1,11 +1,12 @@
-import asyncio
-import re
+import hashlib
 import json
+import re
 import urllib.parse
-from typing import Dict, Any, List
-from playwright.async_api import async_playwright
+from typing import Dict, Any
+
 import dateparser
 from jsonpath_ng import parse
+from playwright.async_api import async_playwright
 
 
 class Scraper:
@@ -194,8 +195,14 @@ class Scraper:
                 return value
             mapping = transform.get("mapping", {})
             return self._apply_map(value, mapping)
+        elif t_type == "hash":
+            return self._to_int(value)
 
         return value
+
+    def _to_int(self, value: Any) -> int:
+        digest = hashlib.sha256(value.encode("utf-8")).digest()
+        return int.from_bytes(digest[:4], byteorder="big")
 
     def _apply_map(self, value: Any, mapping: Dict[str, Any]) -> Any:
         """
