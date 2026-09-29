@@ -62,6 +62,7 @@ class Scraper:
                 )
 
             content_type = response.headers.get("content-type", "") if response else ""
+            logger.info("CONTENT TYPE: %s", content_type)
             is_json = "application/json" in content_type
 
             if is_json:
@@ -77,6 +78,8 @@ class Scraper:
             await context.close()
 
     async def _process_fields(self, root: Any, fields: Dict[str, Any], is_json: bool = False) -> Dict[str, Any]:
+        logger.info("JSON: %s", is_json)
+
         """
         Recursively processes fields using the provided root.
         """
