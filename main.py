@@ -45,22 +45,21 @@ async def start_browser():
 
 
 async def stop_browser():
-    global playwright_instance, browser_instance
     logger.info("Stopping browser...")
     if browser_instance:
         try:
             await browser_instance.close()
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
     if playwright_instance:
         try:
             await playwright_instance.stop()
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(_app: FastAPI):
     await start_browser()
     yield
     await stop_browser()
@@ -103,22 +102,26 @@ async def extract_endpoint(request: ExtractionRequest):
                     cookie=request.cookie
                 )
                 return data
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 error_msg = str(e)
-                if ("Target page, context or browser has been closed" in error_msg or
-                    "Browser closed" in error_msg) and attempt == 0:
+                is_browser_error = (
+                    "Target page, context or browser has been closed" in error_msg
+                    or "Browser closed" in error_msg
+                )
+                if is_browser_error and attempt == 0:
                     logger.warning(
-                        f"Browser error detected: {error_msg}. Restarting browser and retrying (attempt {attempt + 1})...")
+                        "Browser error detected: %s. Restarting and retrying (attempt %d)...",
+                        error_msg, attempt + 1,
+                    )
                     await start_browser()
                     continue
-                else:
-                    raise e
+                raise
     except HTTPException:
         raise
     except Exception as e:
         error_msg = str(e)
-        logger.error(f"Error processing URL: {error_msg}")
-        raise HTTPException(status_code=500, detail=error_msg)
+        logger.error("Error processing URL: %s", error_msg)
+        raise HTTPException(status_code=500, detail=error_msg) from e
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@ import json
 import logging
 import re
 import urllib.parse
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from fastapi import HTTPException
 
@@ -44,10 +44,11 @@ class Scraper:
                     headers["X-XSRF-TOKEN"] = urllib.parse.unquote(xsrf_token)
                     logger.info("Injecting X-XSRF-TOKEN")
 
+            post_body: Optional[str] = None
             if method.upper() == "POST":
                 response = await page.request.fetch(url, method="POST", headers=headers)
-                content = await response.text()
-                await page.set_content(content)
+                post_body = await response.text()
+                await page.set_content(post_body)
             else:
                 response = await page.goto(url, wait_until="load")
 
@@ -55,17 +56,22 @@ class Scraper:
             logger.info("STATUS: %d", status)
 
             if status is None or status >= 400:
-                raise HTTPException(status_code=status or 502, detail=f"Upstream HTTP error {status} fetching {url}")
+                raise HTTPException(
+                    status_code=status or 502,
+                    detail=f"Upstream HTTP error {status} fetching {url}",
+                )
 
             content_type = response.headers.get("content-type", "") if response else ""
             is_json = "application/json" in content_type
 
             if is_json:
-                json_text = await page.evaluate("() => document.body.innerText")
+                # For POST responses the body is already in post_body; otherwise read from DOM
+                json_text = post_body if post_body is not None else await page.evaluate(
+                    "() => document.body.innerText"
+                )
                 data = json.loads(json_text)
                 return await self._process_fields(data, fields, is_json=True)
-            else:
-                return await self._process_fields(page, fields, is_json=False)
+            return await self._process_fields(page, fields, is_json=False)
         finally:
             # Always close the page and context to free resources
             await context.close()
@@ -174,16 +180,13 @@ class Scraper:
             if count == 1:
                 val = await element.get_attribute(attr_name)
                 return self._clean_single_string(val)
-            else:
-                vals = [await el.get_attribute(attr_name) for el in await element.all()]
-                return self._clean_string(vals)
-        else:
-            if count == 1:
-                val = await element.inner_text()
-                return self._clean_single_string(val)
-            else:
-                vals = await element.all_inner_texts()
-                return self._clean_string(vals)
+            vals = [await el.get_attribute(attr_name) for el in await element.all()]
+            return self._clean_string(vals)
+        if count == 1:
+            val = await element.inner_text()
+            return self._clean_single_string(val)
+        vals = await element.all_inner_texts()
+        return self._clean_string(vals)
 
     def _apply_transform(self, value: Any, transform: Any) -> Any:
         """
