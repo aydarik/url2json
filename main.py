@@ -113,6 +113,8 @@ async def extract_endpoint(request: ExtractionRequest):
                     continue
                 else:
                     raise e
+    except HTTPException:
+        raise
     except Exception as e:
         error_msg = str(e)
         logger.error(f"Error processing URL: {error_msg}")

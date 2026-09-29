@@ -5,6 +5,8 @@ import re
 import urllib.parse
 from typing import Dict, Any
 
+from fastapi import HTTPException
+
 import dateparser
 from jsonpath_ng import parse
 from playwright.async_api import BrowserContext
@@ -17,12 +19,15 @@ class Scraper:
                            method: str = "GET", cookie: bool = False) -> Dict[str, Any]:
         """
         Navigates to the given URL and extracts data based on XPath or JSONPath mappings.
+        Content type is determined from the response Content-Type header.
         If cookie is True, it navigates to the base part of the URL first to collect cookies.
+        Raises an exception if the server responds with an HTTP error status code.
         """
         logger.info("URL: %s ", url)
         page = await context.new_page()
 
         try:
+            headers = {}
             if cookie:
                 parsed_url = urllib.parse.urlparse(url)
                 cookie_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
@@ -31,7 +36,8 @@ class Scraper:
 
                 cookies = await context.cookies()
                 cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
-                headers = {"Cookie": cookie_str} if cookie_str else {}
+                if cookie_str:
+                    headers["Cookie"] = cookie_str
 
                 xsrf_token = next((c['value'] for c in cookies if c['name'] == 'XSRF-TOKEN'), None)
                 if xsrf_token:
@@ -44,15 +50,21 @@ class Scraper:
                 await page.set_content(content)
             else:
                 response = await page.goto(url, wait_until="load")
-            logger.info("STATUS: %d", response.status if response else None)
 
-            try:
-                # Try to parse the inner text as JSON
+            status = response.status if response else None
+            logger.info("STATUS: %d", status)
+
+            if status is None or status >= 400:
+                raise HTTPException(status_code=status or 502, detail=f"Upstream HTTP error {status} fetching {url}")
+
+            content_type = response.headers.get("content-type", "") if response else ""
+            is_json = "application/json" in content_type
+
+            if is_json:
                 json_text = await page.evaluate("() => document.body.innerText")
                 data = json.loads(json_text)
                 return await self._process_fields(data, fields, is_json=True)
-            except Exception:
-                # Fallback to HTML/XPath
+            else:
                 return await self._process_fields(page, fields, is_json=False)
         finally:
             # Always close the page and context to free resources
