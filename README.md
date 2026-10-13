@@ -61,7 +61,7 @@
             "field_name": {
                 "path": "xpath_or_jsonpath_expression",
                 "transform": {
-                    "type": "date | regex | map",
+                    "type": "date | regex | map | hash",
                     "pattern": "regex_pattern (if type is regex)",
                     "replacement": "replacement_string (if type is regex)",
                     "mapping": { "key": "value" }
@@ -69,6 +69,25 @@
             }
         }
         ```
+
+    -   **Regex extraction & Sub-requests (URL Templating):**
+
+        For pages where data is embedded in the source HTML or requires secondary API calls (e.g. extracting IDs from HTML and fetching sub-resources into a combined array):
+
+        ```json
+        {
+            "data": {
+                "regex": "upcomingSessions:\\$R\\[\\d+\\]=\\[(.*?)\\](?:,pastSessions|\\})",
+                "item_regex": "id:\"([0-9a-f-]+)\"",
+                "url_template": "https://example.com/api/sessions/<id>/info",
+                "fields": {
+                    "id": "$.sessionId",
+                    "title": "$.gameTitle"
+                }
+            }
+        }
+        ```
+        *Note:* If `fields` is omitted within `url_template`, each item retains the full parsed JSON response from the sub-request. Placeholders `<id>`, `<item>`, `{id}`, or `{}` are automatically formatted.
 
 ## Installation
 

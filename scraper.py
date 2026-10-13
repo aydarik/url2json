@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import logging
@@ -16,9 +17,10 @@ logger = logging.getLogger(__name__)
 
 class Scraper:
     async def extract_data(self, context: BrowserContext, url: str, fields: Dict[str, Any],
-                           method: str = "GET", cookie: bool = False) -> Dict[str, Any]:
+                           method: str = "GET", cookie: bool = False,
+                           headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         """
-        Navigates to the given URL and extracts data based on XPath or JSONPath mappings.
+        Navigates to the given URL and extracts data based on XPath, JSONPath, or regex mappings.
         Content type is determined from the response Content-Type header.
         If cookie is True, it navigates to the base part of the URL first to collect cookies.
         Raises an exception if the server responds with an HTTP error status code.
@@ -27,7 +29,7 @@ class Scraper:
         page = await context.new_page()
 
         try:
-            headers = {}
+            req_headers = dict(headers) if headers else {}
             if cookie:
                 parsed_url = urllib.parse.urlparse(url)
                 cookie_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
@@ -37,20 +39,27 @@ class Scraper:
                 cookies = await context.cookies()
                 cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
                 if cookie_str:
-                    headers["Cookie"] = cookie_str
+                    req_headers["Cookie"] = cookie_str
 
                 xsrf_token = next((c['value'] for c in cookies if c['name'] == 'XSRF-TOKEN'), None)
                 if xsrf_token:
-                    headers["X-XSRF-TOKEN"] = urllib.parse.unquote(xsrf_token)
+                    req_headers["X-XSRF-TOKEN"] = urllib.parse.unquote(xsrf_token)
                     logger.info("Injecting X-XSRF-TOKEN")
 
             post_body: Optional[str] = None
+            raw_text: Optional[str] = None
             if method.upper() == "POST":
-                response = await page.request.fetch(url, method="POST", headers=headers)
+                response = await page.request.fetch(url, method="POST", headers=req_headers)
                 post_body = await response.text()
                 await page.set_content(post_body)
+                raw_text = post_body
             else:
                 response = await page.goto(url, wait_until="load")
+                if response:
+                    try:
+                        raw_text = await response.text()
+                    except Exception:
+                        raw_text = None
 
             status = response.status if response else None
             logger.info("STATUS: %d", status)
@@ -70,14 +79,27 @@ class Scraper:
                 json_text = post_body if post_body is not None else await page.evaluate(
                     "() => document.body.innerText"
                 )
+                raw_text = json_text
                 data = json.loads(json_text)
-                return await self._process_fields(data, fields, is_json=True)
-            return await self._process_fields(page, fields, is_json=False)
+                return await self._process_fields(
+                    data, fields, is_json=True, raw_text=raw_text, context=context, headers=req_headers
+                )
+            return await self._process_fields(
+                page, fields, is_json=False, raw_text=raw_text, context=context, headers=req_headers
+            )
         finally:
             # Always close the page and context to free resources
             await context.close()
 
-    async def _process_fields(self, root: Any, fields: Dict[str, Any], is_json: bool = False) -> Dict[str, Any]:
+    async def _process_fields(
+        self,
+        root: Any,
+        fields: Dict[str, Any],
+        is_json: bool = False,
+        raw_text: Optional[str] = None,
+        context: Optional[BrowserContext] = None,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
         logger.info("JSON: %s", is_json)
 
         """
@@ -95,20 +117,111 @@ class Scraper:
                 elif isinstance(definition, dict):
                     selector = definition.get("selector")
                     nested_fields = definition.get("fields")
+                    regex = definition.get("regex")
+                    item_regex = definition.get("item_regex")
+                    url_template = definition.get("url_template")
+                    transform = definition.get("transform")
+                    path_def = definition.get("path")
+                    sub_method = definition.get("method", "GET")
 
-                    if selector and nested_fields:
+                    if url_template:
+                        # Collection of sub-requests generated from regex, selector, or path
+                        items = []
+                        if regex:
+                            items = self._extract_regex_items(raw_text or "", regex, item_regex)
+                        elif selector:
+                            if is_json:
+                                val = self._extract_jpath(root, selector)
+                            else:
+                                val = await self._extract_xpath(root, selector)
+                            items = val if isinstance(val, list) else ([val] if val is not None else [])
+                        elif path_def:
+                            val = self._extract_jpath(root, path_def) if is_json else await self._extract_xpath(root, path_def)
+                            items = val if isinstance(val, list) else ([val] if val is not None else [])
+
+                        async def _fetch_sub_item(item_val: Any) -> Any:
+                            sub_url = self._format_url_template(url_template, item_val)
+                            try:
+                                sub_res = await context.request.fetch(
+                                    sub_url, method=sub_method.upper(), headers=headers or {}
+                                )
+                                if sub_res.status >= 400:
+                                    logger.warning("Sub-request %s returned status %d", sub_url, sub_res.status)
+                                    return None
+                                sub_ct = sub_res.headers.get("content-type", "")
+                                if "application/json" in sub_ct:
+                                    sub_data = await sub_res.json()
+                                    if nested_fields:
+                                        return await self._process_fields(
+                                            sub_data, nested_fields, is_json=True,
+                                            raw_text=json.dumps(sub_data), context=context, headers=headers
+                                        )
+                                    return sub_data
+                                else:
+                                    sub_text = await sub_res.text()
+                                    if nested_fields:
+                                        sub_page = await context.new_page()
+                                        try:
+                                            await sub_page.set_content(sub_text)
+                                            return await self._process_fields(
+                                                sub_page, nested_fields, is_json=False,
+                                                raw_text=sub_text, context=context, headers=headers
+                                            )
+                                        finally:
+                                            await sub_page.close()
+                                    return sub_text
+                            except Exception as e:
+                                logger.warning("Error fetching sub-request %s: %s", sub_url, e)
+                                return None
+
+                        if context and items:
+                            fetched = await asyncio.gather(*[_fetch_sub_item(item) for item in items])
+                            results[field_name] = [item for item in fetched if item is not None]
+                        else:
+                            results[field_name] = []
+
+                    elif regex and (item_regex or nested_fields):
+                        # Regex-based collection without sub-requests
+                        items = self._extract_regex_items(raw_text or "", regex, item_regex)
+                        if nested_fields:
+                            collection_results = []
+                            for it in items:
+                                it_data = await self._process_fields(
+                                    it, nested_fields, is_json=isinstance(it, (dict, list)),
+                                    raw_text=str(it), context=context, headers=headers
+                                )
+                                collection_results.append(it_data)
+                            results[field_name] = collection_results
+                        else:
+                            results[field_name] = items
+
+                    elif regex and not selector and not path_def:
+                        # Single value regex extraction from raw_text
+                        val = self._extract_single_regex(raw_text or "", regex)
+                        if transform and val:
+                            results[field_name] = self._apply_transform(val, transform)
+                        else:
+                            results[field_name] = val
+
+                    elif selector and nested_fields:
                         # Collection
                         collection_results = []
                         if is_json:
                             items = self._extract_jpath(root, selector)
                             if isinstance(items, list):
                                 for item in items:
-                                    item_data = await self._process_fields(item, nested_fields, is_json=True)
+                                    item_data = await self._process_fields(
+                                        item, nested_fields, is_json=True,
+                                        raw_text=raw_text, context=context, headers=headers
+                                    )
                                     collection_results.append(item_data)
                         else:
                             locators = await root.locator(f"xpath={selector}").all()
                             for locator in locators:
-                                item_data = await self._process_fields(locator, nested_fields, is_json=False)
+                                item_data = await self._process_fields(
+                                    locator, nested_fields, is_json=False,
+                                    raw_text=raw_text, context=context, headers=headers
+                                )
                                 collection_results.append(item_data)
 
                         results[field_name] = collection_results
@@ -144,10 +257,80 @@ class Scraper:
                 results[field_name] = f"Error: {str(e)}"
         return results
 
+    def _extract_regex_items(self, text: str, regex: str, item_regex: Optional[str] = None) -> list:
+        """
+        Extracts a list of items using regex.
+        If item_regex is provided, first matches regex to find a section, then finds all item_regex in that section.
+        """
+        if not text:
+            return []
+        try:
+            if item_regex:
+                m = re.search(regex, text, re.DOTALL)
+                if not m:
+                    return []
+                block = m.group(1) if m.groups() else m.group(0)
+                items = re.findall(item_regex, block, re.DOTALL)
+            else:
+                items = re.findall(regex, text, re.DOTALL)
+
+            cleaned = []
+            for item in items:
+                if isinstance(item, tuple):
+                    cleaned.append(item[0] if len(item) == 1 else item)
+                else:
+                    cleaned.append(item)
+            return cleaned
+        except Exception as e:
+            logger.warning("Regex extraction error: %s", e)
+            return []
+
+    def _extract_single_regex(self, text: str, regex: str) -> Optional[str]:
+        """
+        Extracts a single value from text using regex.
+        """
+        if not text:
+            return None
+        try:
+            m = re.search(regex, text, re.DOTALL)
+            if not m:
+                return None
+            return m.group(1) if m.groups() else m.group(0)
+        except Exception as e:
+            logger.warning("Single regex extraction error: %s", e)
+            return None
+
+    def _format_url_template(self, template: str, item: Any) -> str:
+        """
+        Formats a URL template with the extracted item.
+        Supports <id>, <item>, {id}, {}, etc.
+        """
+        if isinstance(item, dict):
+            res = template
+            for k, v in item.items():
+                s_val = str(v).strip("\"' \t\r\n")
+                res = res.replace(f"<{k}>", s_val).replace(f"{{{k}}}", s_val)
+            return res
+
+        s_item = str(item).strip("\"' \t\r\n")
+        if re.search(r"<[a-zA-Z0-9_]+>", template):
+            return re.sub(r"<[a-zA-Z0-9_]+>", s_item, template)
+        if "{}" in template:
+            return template.replace("{}", s_item)
+        if re.search(r"\{[a-zA-Z0-9_]+\}", template):
+            return re.sub(r"\{[a-zA-Z0-9_]+\}", s_item, template)
+        if template.endswith("/"):
+            return f"{template}{s_item}"
+        return f"{template}/{s_item}"
+
+
     def _extract_jpath(self, data: Any, jpath: str) -> Any:
         """
         Extracts values using JSONPath.
         """
+        if jpath.startswith("'"):
+            return jpath.strip("'")
+
         try:
             jsonpath_expr = parse(jpath)
             matches = [match.value for match in jsonpath_expr.find(data)]
@@ -166,7 +349,7 @@ class Scraper:
         """
 
         if xpath.startswith("'"):
-            return xpath[1:]
+            return xpath.strip("'")
 
         # Handle attribute extraction if specified (e.g., //a/@href)
         attr_name = None
@@ -260,19 +443,21 @@ class Scraper:
             return [self._parse_single_date(v) for v in value]
         return self._parse_single_date(value)
 
-    def _parse_single_date(self, date_str: str) -> str:
+    def _parse_single_date(self, date_str: Any) -> str:
         """
         Parses a single date string into ISO 8601.
         """
-        if not date_str:
+        if date_str is None:
             return None
+        if isinstance(date_str, (int, float)):
+            date_str = str(int(date_str))
         try:
-            dt = dateparser.parse(date_str)
+            dt = dateparser.parse(str(date_str))
             if dt:
                 return dt.isoformat()
-            return date_str
+            return str(date_str)
         except Exception:
-            return date_str
+            return str(date_str)
 
     def _clean_string(self, value: Any) -> Any:
         """
