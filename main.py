@@ -67,7 +67,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="URL to JSON API",
               description="An API to get the JSON version of HTML content using Playwright.",
-              version="0.2.1",
+              version="0.2.3",
               lifespan=lifespan)
 scraper = Scraper()
 
@@ -77,6 +77,7 @@ class ExtractionRequest(BaseModel):
     fields: Dict[str, Any]
     method: Optional[str] = "GET"
     cookie: Optional[bool] = False
+    headers: Optional[Dict[str, str]] = None
 
 
 @app.post("/extract")
@@ -92,14 +93,18 @@ async def extract_endpoint(request: ExtractionRequest):
                     await start_browser()
 
                 # Create a new context and page for each request to ensure thread safety (isolation)
-                context = await browser_instance.new_context()
+                context_args = {}
+                if request.headers:
+                    context_args["extra_http_headers"] = request.headers
+                context = await browser_instance.new_context(**context_args)
 
                 data = await scraper.extract_data(
                     context=context,
                     url=request.url,
                     fields=request.fields,
                     method=request.method,
-                    cookie=request.cookie
+                    cookie=request.cookie,
+                    headers=request.headers,
                 )
                 return data
             except Exception as e:  # noqa: BLE001

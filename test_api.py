@@ -135,6 +135,55 @@ def test_xpath():
         print(f"Error: {e}")
 
 
+def test_sub_requests():
+    url = "http://localhost:8000/extract"
+    payload = {
+        "url": "https://detequiz.com/germany/berlin",
+        "fields": {
+            "data": {
+                "regex": "upcomingSessions:\\$R\\[\\d+\\]=\\[(.*?)\\](?:,pastSessions|\\})",
+                "item_regex": "id:\"([0-9a-f-]+)\"",
+                "url_template": "https://detequiz.com/api/teams/sessions/<id>/info",
+                "fields": {
+                    "id": {
+                        "path": "$.sessionId",
+                        "transform": {
+                            "type": "hash"
+                        }
+                    },
+                    "title": "$.gameTitle",
+                    "description": "$.gameDescription",
+                    "image": "$.socialPreviewUrl",
+                    "datetime": {
+                        "path": "$.scheduledAt",
+                        "transform": {
+                            "type": "date"
+                        }
+                    },
+                    "price": {
+                        "path": [
+                            "$.ticketPrice",
+                            "$.ticketCurrency"
+                        ]
+                    },
+                    "venue": "$.venueName",
+                    "address": "$.venueAddress"
+                }
+            }
+        }
+    }
+
+    print("Testing detequiz regex & sub-requests extraction...")
+    try:
+        response = requests.post(url, json=payload)
+        response.raise_for_status()
+        print(json.dumps(response.json(), indent=2, ensure_ascii=False))
+    except Exception as e:
+        print(f"Error: {e}")
+
+
 if __name__ == "__main__":
     test_xpath()
     test_jsonpath()
+    test_detequiz()
+
